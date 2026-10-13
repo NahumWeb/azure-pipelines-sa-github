@@ -1,0 +1,79 @@
+# CI básico con referencia a la service connection de GitHub "SA-github".
+#
+# IMPORTANTE: el repo que dispara el pipeline (self) NO se referencia con la SC
+# en el YAML; esa vinculación se hace al crear el pipeline en Azure DevOps
+# (Pipelines -> New pipeline -> GitHub -> "select a specific connection" -> SA-github).
+# La SC se cita en el YAML solo para traer OTROS repos de GitHub (bloque resources).
+
+trigger:
+  branches:
+    include:
+      - main
+      - release/*
+
+pr:
+  branches:
+    include:
+      - main
+
+# Descomenta y ajusta si necesitas clonar un segundo repo de GitHub con SA-github
+# resources:
+#   repositories:
+#     - repository: libreria-comun        # alias para usar en checkout
+#       type: github
+#       endpoint: SA-github               # nombre de la service connection
+#       name: tu-owner/tu-otro-repo       # owner/repo en GitHub
+#       ref: refs/heads/main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  MAVEN_CACHE_FOLDER: $(Pipeline.Workspace)/.m2/repository
+  MAVEN_OPTS: '-Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)'
+
+steps:
+  - checkout: self                      # repo que disparó el pipeline (PR o push)
+    fetchDepth: 0
+  # - checkout: libreria-comun          # descomenta junto con el bloque resources
+
+  - script: |
+      echo "Build:   $(Build.BuildNumber)"
+      echo "Motivo:  $(Build.Reason)"
+      echo "Repo:    $(Build.Repository.Name) ($(Build.Repository.Provider))"
+      echo "Commit:  $(Build.SourceVersion)"
+      echo "Rama:    $(Build.SourceBranch)"
+      echo "PR #:    $(System.PullRequest.PullRequestNumber)"
+    displayName: Info de trazabilidad
+
+  - task: Cache@2
+    displayName: Cache de dependencias Maven
+    inputs:
+      key: 'maven | "$(Agent.OS)" | **/pom.xml'
+      restoreKeys: |
+        maven | "$(Agent.OS)"
+      path: $(MAVEN_CACHE_FOLDER)
+
+  - task: Maven@4
+    displayName: Compilar y ejecutar pruebas
+    inputs:
+      mavenPomFile: pom.xml
+      goals: verify
+      javaHomeOption: JDKVersion
+      jdkVersionOption: '1.17'
+      publishJUnitResults: true
+      testResultsFiles: '**/surefire-reports/TEST-*.xml'
+
+  - task: CopyFiles@2
+    displayName: Copiar el JAR al staging
+    inputs:
+      SourceFolder: $(System.DefaultWorkingDirectory)
+      Contents: 'target/*.jar'
+      TargetFolder: $(Build.ArtifactStagingDirectory)
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publicar artefacto 'drop'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)
+      artifactName: drop
